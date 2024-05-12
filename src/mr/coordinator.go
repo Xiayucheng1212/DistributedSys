@@ -5,13 +5,47 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
+import "sync"
 
 
 type Coordinator struct {
 	// Your definitions here.
+	fileNames []string
+	nReduce int
+	nextIndex int // next file index to assign to worker
+	nextReduceIndex int // next reduce index to assign to worker
+	mu sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
+
+func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
+	// Your code here.
+	// lock the coordinator
+	reply.NReduce = c.nReduce
+	reply.NMap = len(c.fileNames)
+	if c.nextIndex >= len(c.fileNames) && c.nextReduceIndex < c.nReduce {
+		// assign reduce task
+		reply.FileName = ""
+		reply.TaskType = "reduce"
+		c.mu.Lock()
+		reply.TaskIndex = c.nextReduceIndex
+		c.nextReduceIndex++
+		c.mu.Unlock()
+	} else if c.nextIndex < len(c.fileNames) {
+		// assign map task
+		reply.FileName = c.fileNames[c.nextIndex]
+		reply.TaskType = "map"
+		c.mu.Lock()
+		reply.TaskIndex = c.nextIndex
+		c.nextIndex++
+		c.mu.Unlock()
+	} else {
+		reply.TaskType = "no more tasks"
+	}
+	
+	return nil
+}
 
 //
 // an example RPC handler.
@@ -48,7 +82,9 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	if c.nextIndex >= len(c.fileNames) && c.nextReduceIndex >= c.nReduce {
+		ret = true
+	}
 
 	return ret
 }
@@ -62,7 +98,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-
+	c.fileNames = files
+	c.nReduce = nReduce
+	c.nextIndex = 0
+	c.nextReduceIndex = 0
+	c.mu = sync.Mutex{}
 
 	c.server()
 	return &c
