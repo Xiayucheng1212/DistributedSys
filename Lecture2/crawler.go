@@ -94,7 +94,7 @@ func coordinator(ch chan []string, fetcher Fetcher) {
 				go worker(u, ch, fetcher)
 			}
 		}
-		// Notice here!! 
+		// Notice here!! The number of passing the if condition above is the same as that of the total urls.
 		n -= 1
 		if n == 0 {
 			break
