@@ -30,17 +30,18 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	key := args.Key
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if seqId, ok := kv.previousRequest[args.ClerkId]; ok {
-		if seqId == args.SeqId {
-			reply.Value = kv.requestResult[args.ClerkId]
-			return
-		}
-	}
-	kv.previousRequest[args.ClerkId] = args.SeqId
+	// Q: why this 
+	// if seqId, ok := kv.previousRequest[args.ClerkId]; ok {
+	// 	if seqId == args.SeqId {
+	// 		reply.Value = kv.requestResult[args.ClerkId]
+	// 		return
+	// 	}
+	// }
+	// kv.previousRequest[args.ClerkId] = args.SeqId
 
 	if value, ok := kv.kvMap[key]; ok {
 		reply.Value = value
-		kv.requestResult[args.ClerkId] = value
+		// kv.requestResult[args.ClerkId] = value
 	} else {
 		reply.Value = ""
 	}
