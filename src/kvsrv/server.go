@@ -30,7 +30,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	key := args.Key
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	// Q: why this 
+	// Q: Why this don't need to check previous request? 
 	// if seqId, ok := kv.previousRequest[args.ClerkId]; ok {
 	// 	if seqId == args.SeqId {
 	// 		reply.Value = kv.requestResult[args.ClerkId]
