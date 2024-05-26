@@ -26,6 +26,8 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	key := args.Key
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	if value, ok := kv.kvMap[key]; ok {
 		reply.Value = value
 	} else {
@@ -51,13 +53,14 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	value := args.Value
 
 	kv.mu.Lock()
-	if oldValue, ok := kv.kvMap[key]; ok {
+	oldValue, ok := kv.kvMap[key];
+	if ok {
 		value = oldValue + value
 	}
 	kv.kvMap[key] = value
 	kv.mu.Unlock()
 
-	reply.Value = value
+	reply.Value = oldValue
 }
 
 func StartKVServer() *KVServer {
