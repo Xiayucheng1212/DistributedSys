@@ -50,6 +50,11 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -61,7 +66,13 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	currentTerm int
+	votedFor    int
+	log         []LogEntry
+	commitIndex int
+	lastApplied int
+	nextIndex   []int
+	matchIndex  []int
 }
 
 // return currentTerm and whether this server
@@ -128,17 +139,50 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	Term 	   int
+	CandidateId int
+	LastLogIndex int
+	LastLogTerm int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	Term int
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	} 
+
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
+		if args.LastLogTerm == rf.log[len(rf.log) - 1].Term && args.LastLogIndex >= len(rf.log) - 1 {
+			rf.votedFor = args.CandidateId
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = true
+			return
+		} else if args.LastLogTerm > rf.log[len(rf.log) - 1].Term {
+			rf.votedFor = args.CandidateId
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = true
+			return
+		}
+	}
+
+	// if the candidate's log is not up-to-date, reject the vote
+	// if the server is already voted for another candidate, reject the vote
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -221,7 +265,9 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-
+		// If this server hasn't heard from a leader in a while, it should start an election.
+		// If this server has heard from a leader, it should reset its timer.
+		
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
@@ -247,6 +293,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.log = make([]LogEntry, 0)
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
