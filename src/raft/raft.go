@@ -93,24 +93,28 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 }
 
 func (rf *Raft) sendHeartBeats() {
+	// TODO: check what to do with rf.peers & check return from sendAppendEntries
 	rf.mu.Lock()
 	args := AppendEntries{
 		Term: rf.currentTerm,
 		LeaderId: rf.me,
 	}
-	reply := AppendEntriesReply{}
 	rf.mu.Unlock()
+	reply := AppendEntriesReply{}
+
 	for i := 0; i < len(rf.peers); i++ {
+		rf.mu.Lock()
 		if i != rf.me && rf.state == 2{
-			rf.sendAppendEntries(i, &args, &reply)
-			if reply.Term > rf.currentTerm {
-				rf.mu.Lock()
+			rf.mu.Unlock()
+			ok := rf.sendAppendEntries(i, &args, &reply)
+			rf.mu.Lock()
+			if ok && reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
 				rf.state = 0
 				rf.votedFor = -1
-				rf.mu.Unlock()
 			}
 		}
+		rf.mu.Unlock()
 	}
 	time.Sleep(100 * time.Millisecond) // heartbeats no more than 10 times per second
 }
@@ -348,24 +352,32 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) startElection() {
+	// TODO: check what to do with rf.peers & check return from sendRequestVote
 	rf.mu.Lock()
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.votesReceived = 1
 	rf.state = 1
 	rf.electionTimer = time.Now() // reset the election timer, when there is no server becomes a leader, the election timer will timeout
-	rf.mu.Unlock()
 
 	args := RequestVoteArgs{
-		Term: rf.currentTerm,
-		CandidateId: rf.me,
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
 		LastLogIndex: len(rf.log) - 1,
-		LastLogTerm: rf.log[len(rf.log) - 1].Term,
 	}
 
+	if len(rf.log) > 0 {
+		args.LastLogTerm = rf.log[len(rf.log)-1].Term
+	} else {
+		args.LastLogTerm = 0
+	}
+
+	rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
+		rf.mu.Lock()
 		if i != rf.me && rf.state == 1 {
+			rf.mu.Unlock()
 			go func(server int) {
 				reply := RequestVoteReply{}
 				rf.sendRequestVote(server, &args, &reply)
@@ -386,25 +398,28 @@ func (rf *Raft) startElection() {
 					}
 				}
 			}(i)
+		} else {
+			rf.mu.Unlock()
 		}
 	}
 }
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
 		// Your code here (3A)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
-		state := rf.state
-		rf.mu.Unlock()
-		//TODO: check this again, server state transition
-		if state != 2 {
+
+		if rf.state != 2 {
 			if time.Since(rf.electionTimer) > rf.electionTimeout {
+				rf.mu.Unlock()
 				rf.startElection()
+			} else {
+				rf.mu.Unlock()
 			}
 		} else {
 			// send heartbeats
+			rf.mu.Unlock()
 			rf.sendHeartBeats()
 		}
 	}
