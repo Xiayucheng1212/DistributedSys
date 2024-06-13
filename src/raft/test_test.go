@@ -71,7 +71,7 @@ func TestReElection3A(t *testing.T) {
 	cfg.connect(leader1)
 	fmt.Printf("connect leader1\n")
 	leader2 := cfg.checkOneLeader()
-	fmt.Printf("pass leader2\n")
+	fmt.Printf("pass leader2: leader is %v\n", leader2)
 
 	// if there's no quorum, no new leader should
 	// be elected.
@@ -120,6 +120,7 @@ func TestManyElections3A(t *testing.T) {
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
 		cfg.checkOneLeader()
+		fmt.Printf("checkOneLeader iter: %v \n", ii)
 
 		cfg.connect(i1)
 		cfg.connect(i2)

@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -27,8 +28,6 @@ import (
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
-
-
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -89,11 +88,11 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		rf.state = 0 // Received a heartbeat, so the server is a follower
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.votesReceived = 0
 	}
 }
 
 func (rf *Raft) sendHeartBeats() {
-	// TODO: check what to do with rf.peers & check return from sendAppendEntries
 	rf.mu.Lock()
 	args := AppendEntries{
 		Term: rf.currentTerm,
@@ -106,12 +105,14 @@ func (rf *Raft) sendHeartBeats() {
 		rf.mu.Lock()
 		if i != rf.me && rf.state == 2{
 			rf.mu.Unlock()
+			// Notice: Must not hold the lock when sending RPC
 			ok := rf.sendAppendEntries(i, &args, &reply)
 			rf.mu.Lock()
 			if ok && reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
 				rf.state = 0
 				rf.votedFor = -1
+				rf.votesReceived = 0
 			}
 		}
 		rf.mu.Unlock()
@@ -254,6 +255,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = 0
 		rf.currentTerm = args.Term
 		rf.votedFor = -1 // Vote again in the new term as the server is a follower
+		rf.votesReceived = 0
 	}
 
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
@@ -352,7 +354,6 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) startElection() {
-	// TODO: check what to do with rf.peers & check return from sendRequestVote
 	rf.mu.Lock()
 	rf.currentTerm++
 	rf.votedFor = rf.me
@@ -380,14 +381,20 @@ func (rf *Raft) startElection() {
 			rf.mu.Unlock()
 			go func(server int) {
 				reply := RequestVoteReply{}
-				rf.sendRequestVote(server, &args, &reply)
+				ok := rf.sendRequestVote(server, &args, &reply)
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
+
+				// If the server does not respond properly, do nothing
+				if !ok {
+					return
+				}
 
 				if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
 					rf.state = 0
 					rf.votedFor = -1
+					rf.votesReceived = 0
 					return
 				}
 
@@ -395,6 +402,7 @@ func (rf *Raft) startElection() {
 					rf.votesReceived++
 					if rf.votesReceived > len(rf.peers) / 2 {
 						rf.state = 2
+						rf.votesReceived = 0
 					}
 				}
 			}(i)
@@ -452,7 +460,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = 0
 	rf.votesReceived = 0
 	rf.electionTimer = time.Now()
-	ms := 50 + (rand.Int63() % 300)
+	ms := 200 + (rand.Int63() % 150)
 	rf.electionTimeout = time.Duration(ms) * time.Millisecond
 
 	// initialize from state persisted before a crash
