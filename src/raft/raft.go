@@ -336,7 +336,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	term = rf.currentTerm
+	index = len(rf.log)
+	isLeader = rf.state == 2
+
+	if rf.state == 2 {
+		rf.log = append(rf.log, LogEntry{Term: term, Command: command})
+		// rf.persist()
+	}
 
 	return index, term, isLeader
 }
@@ -443,6 +453,7 @@ func (rf *Raft) ticker() {
 			rf.sendHeartBeats()
 			time.Sleep(100 * time.Millisecond) // heartbeats no more than 10 times per second
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
