@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	// "fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -75,20 +76,21 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
-		return
-	}
-
-	rf.electionTimer = time.Now()
-	rf.currentTerm = args.Term
-	reply.Term = rf.currentTerm
-	reply.Success = true
-
+	} 
+	
 	if args.Term > rf.currentTerm {
 		rf.state = 0 // Received a heartbeat, so the server is a follower
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.votesReceived = 0
+		rf.electionTimer = time.Now() // reset the election timer
+		reply.Term = rf.currentTerm
+		reply.Success = true
+		return 
 	}
+
+	reply.Term = rf.currentTerm
+	reply.Success = true
 }
 
 func (rf *Raft) sendHeartBeats() {
@@ -104,19 +106,25 @@ func (rf *Raft) sendHeartBeats() {
 		rf.mu.Lock()
 		if i != rf.me && rf.state == 2{
 			rf.mu.Unlock()
-			// Notice: Must not hold the lock when sending RPC
-			ok := rf.sendAppendEntries(i, &args, &reply)
-			rf.mu.Lock()
-			if ok && reply.Term > rf.currentTerm {
-				rf.currentTerm = reply.Term
-				rf.state = 0
-				rf.votedFor = -1
-				rf.votesReceived = 0
-			}
+			go func(server int) {
+				// Notice: Must not hold the lock when sending RPC
+				ok := rf.sendAppendEntries(server, &args, &reply)
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if ok {
+					if reply.Term > rf.currentTerm {
+						rf.currentTerm = reply.Term
+						rf.state = 0
+						rf.votedFor = -1
+						rf.votesReceived = 0
+						rf.electionTimer = time.Now() // return to follower, reset the election timer or it becomes a candidate again
+					}
+				}
+			}(i)
+		} else {
+			rf.mu.Unlock()
 		}
-		rf.mu.Unlock()
 	}
-	time.Sleep(100 * time.Millisecond) // heartbeats no more than 10 times per second
 }
 
 // A Go object implementing a single Raft peer.
@@ -394,6 +402,7 @@ func (rf *Raft) startElection() {
 					rf.state = 0
 					rf.votedFor = -1
 					rf.votesReceived = 0
+					rf.electionTimer = time.Now() // return to follower, reset the election timer or it becomes a candidate again
 					return
 				}
 
@@ -406,6 +415,10 @@ func (rf *Raft) startElection() {
 				}
 			}(i)
 		} else {
+			if rf.votesReceived > len(rf.peers) / 2 {
+				rf.mu.Unlock()
+				return
+			}
 			rf.mu.Unlock()
 		}
 	}
@@ -428,6 +441,7 @@ func (rf *Raft) ticker() {
 			// send heartbeats
 			rf.mu.Unlock()
 			rf.sendHeartBeats()
+			time.Sleep(100 * time.Millisecond) // heartbeats no more than 10 times per second
 		}
 	}
 }
@@ -459,7 +473,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = 0
 	rf.votesReceived = 0
 	rf.electionTimer = time.Now()
-	ms := 200 + (rand.Int63() % 150)
+	ms := 300 + (rand.Int63() % 150)
 	rf.electionTimeout = time.Duration(ms) * time.Millisecond
 
 	// initialize from state persisted before a crash
