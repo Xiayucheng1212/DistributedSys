@@ -19,6 +19,8 @@ package raft
 
 import (
 	//	"bytes"
+	// "fmt"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -85,14 +87,14 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	rf.votedFor = -1
 	rf.votesReceived = 0
 	rf.electionTimer = time.Now() // reset the election timer
-	
-	// fmt.Printf("Server %d received append entries from leader %d with args PrevLogIndex: %d, PrevLogTerm: %d, Entries: %v, LeaderCommit: %d\n", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.Entries, args.LeaderCommit)
+
+	fmt.Printf("Server %d received append entries from leader %d with args PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d\n", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
 	if args.PrevLogIndex >= len(rf.log) {
 		reply.Success = false
 	} else if args.PrevLogIndex == 0 {
 		if len(args.Entries) > 0 {
-			// If the PrevLogIndex is -1, it means the server has no log entries, so append the new entries	
+			// If the PrevLogIndex is -1, it means the server has no log entries, so append the new entries
 			rf.log = append(rf.log, args.Entries...)
 		} // else it's a heartbeat
 		reply.Success = true
@@ -131,16 +133,15 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 			rf.applyCh <- applyMsg
 		}
 	}
-	// fmt.Printf("Received append entries from leader %d, rf.log: %v, rf.commitIndex: %d, rf.lastApplied: %d, reply.Success: %v\n", args.LeaderId, rf.log, rf.commitIndex, rf.lastApplied, reply.Success)
 }
 
 func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *AppendEntriesReply) bool {
 	ok := rf.sendAppendEntries(server, args, reply)
-	rf.mu.Lock()
-	// fmt.Printf("Server %d sending append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, Entries: %v, rf.log:%v, rf.nextIndex[server]: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm, args.Entries, rf.log, rf.nextIndex[server])
-	rf.mu.Unlock()
 	for !rf.killed() && !ok {
 		ok = rf.sendAppendEntries(server, args, reply)
+		rf.mu.Lock()
+		fmt.Printf("Server %d sending append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, len(rf.log):%v, rf.nextIndex[server]: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm,len(rf.log), rf.nextIndex[server])
+		rf.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 	return true
@@ -178,9 +179,9 @@ func (rf *Raft) sendReplicateRequest(server int) {
 		} else {
 			rf.nextIndex[server]--
 			args.PrevLogIndex = rf.nextIndex[server]
-			// fmt.Printf("Server %d retrying append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, Entries: %v\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm, args.Entries)
+			fmt.Printf("Server %d retrying append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm)
 			args.Entries = rf.log[args.PrevLogIndex+1:]
-			
+
 			if args.PrevLogIndex >= 0 {
 				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			} else {
@@ -197,7 +198,7 @@ func (rf *Raft) sendReplicateRequest(server int) {
 	if reply.Success {
 		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
-		// fmt.Printf("Server %d successfully replicated to server %d, rf.nextIndex[server]: %d, rf.matchIndex[server]: %d\n", rf.me, server, rf.nextIndex[server], rf.matchIndex[server])
+		fmt.Printf("Server %d successfully replicated to server %d, rf.nextIndex[server]: %d, rf.matchIndex[server]: %d\n", rf.me, server, rf.nextIndex[server], rf.matchIndex[server])
 	}
 	rf.mu.Unlock()
 }
@@ -220,8 +221,8 @@ func (rf *Raft) sendHeartBeats(server int) {
 
 	// Notice: Must not hold the lock when sending RPC
 	ok := rf.sendAppendEntries(server, &args, &reply)
-	// fmt.Printf("Server %d sending heartbeats to server %d, len(rf.log): %v\n", rf.me, server, len(rf.log))
 	rf.mu.Lock()
+	fmt.Printf("Server %d sending heartbeats to server %d, len(rf.log): %v\n", rf.me, server, len(rf.log))
 	defer rf.mu.Unlock()
 	if ok {
 		if reply.Term > rf.currentTerm {
@@ -447,16 +448,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	if rf.state == 2 {
 		rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command})
+		index = len(rf.log) - 1
+		term = rf.currentTerm
+		isLeader = true
 		rf.mu.Unlock()
-		// rf.persist()
-		// fmt.Printf("Server %d starting append entries, len(rf.log): %v\n", rf.me, len(rf.log))
-		rf.startAppendEntries()
-		// the server might not be a leader after starting append entries
+		
 		rf.mu.Lock()
-		if rf.state == 2 {
-			index = len(rf.log) - 1
-			term = rf.currentTerm
-			isLeader = true
+		fmt.Printf("Server %d starting append entries, len(rf.log): %v\n", rf.me, len(rf.log))
+		rf.mu.Unlock()
+		
+		go func () {
+			rf.startAppendEntries()
+			//TODO: Do we need to test whether the server might not be a leader after starting append entries
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 			rf.nextIndex[rf.me] = len(rf.log)
 			rf.commitIndex++
 			rf.matchIndex[rf.me]++
@@ -474,13 +479,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					rf.applyCh <- applyMsg
 				}
 			}
-		}else {
-			rf.log = rf.log[:len(rf.log) - 1]
-			term = rf.currentTerm
-			index = len(rf.log)
-			isLeader = rf.state == 2
-		}
-		rf.mu.Unlock()
+		}()
 	} else {
 		rf.mu.Unlock()
 	}
@@ -533,7 +532,7 @@ func (rf *Raft) startAppendEntries() {
 			}
 
 			if count > len(rf.peers)/2-1 { // the minus 1 here is because we don't commit the server yet
-				// fmt.Printf("Server %d finished waiting for majority of the servers, rf.log: %v, rf.commitIndex: %d, count: %d", rf.me, rf.log, rf.commitIndex, count)
+				fmt.Printf("Server %d finished waiting for majority of the servers, len(rf.log): %v, rf.commitIndex: %d, count: %d", rf.me, len(rf.log), rf.commitIndex, count)
 				rf.mu.Unlock()
 				break
 			}
@@ -673,10 +672,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 0)
 	rf.log = append(rf.log, LogEntry{Term: 0, Command: nil}) // index starts from 1
-	rf.commitIndex = 0                      // volatile state on all servers
-	rf.lastApplied = 0                      // volatile state on all servers
-	rf.nextIndex = make([]int, len(peers))  // volatile state on leaders
-	rf.matchIndex = make([]int, len(peers)) // volatile state on leaders
+	rf.commitIndex = 0                                       // volatile state on all servers
+	rf.lastApplied = 0                                       // volatile state on all servers
+	rf.nextIndex = make([]int, len(peers))                   // volatile state on leaders
+	rf.matchIndex = make([]int, len(peers))                  // volatile state on leaders
 	rf.state = 0
 	rf.votesReceived = 0
 	rf.electionTimer = time.Now()
