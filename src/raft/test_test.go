@@ -277,6 +277,7 @@ func TestFailAgree3B(t *testing.T) {
 
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
+	fmt.Printf("leader is %v\n", leader)
 	cfg.disconnect((leader + 1) % servers)
 
 	// the leader and remaining follower should be
@@ -286,7 +287,7 @@ func TestFailAgree3B(t *testing.T) {
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
-
+	fmt.Printf("reconnecting\n")
 	// re-connect
 	cfg.connect((leader + 1) % servers)
 
