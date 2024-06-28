@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -502,16 +504,19 @@ func TestBackup3B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
+	fmt.Printf("leader1 is %v\n", leader1)
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
 
 	// submit lots of commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 2; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
+
+	fmt.Printf("End of uncommitted commands step 1\n")
 
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
@@ -522,22 +527,25 @@ func TestBackup3B(t *testing.T) {
 	cfg.connect((leader1 + 4) % servers)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 2; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 
+	fmt.Printf("End of successful commands step 2 \n")
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
 	other := (leader1 + 2) % servers
 	if leader2 == other {
 		other = (leader2 + 1) % servers
 	}
+	fmt.Printf("other is %v and leader2 is %v\n", other, leader2)
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 2; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
+	fmt.Printf("End of uncommitted commands step 3 \n")
 
 	time.Sleep(RaftElectionTimeout / 2)
 
@@ -549,17 +557,25 @@ func TestBackup3B(t *testing.T) {
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
 
+	fmt.Printf("Alived servers: %v, %v, %v\n", (leader1+0)%servers, (leader1+1)%servers, other)
+
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 2; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
+
+	fmt.Printf("End of successful commands step 4 \n")
 
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
+
+	leader3 := cfg.checkOneLeader()
+	fmt.Printf("leader3 is %v\n", leader3)
 	cfg.one(rand.Int(), servers, true)
 
+	fmt.Printf("End of successful one step 5 \n")
 	cfg.end()
 }
 

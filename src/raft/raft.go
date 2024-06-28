@@ -70,6 +70,17 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+func (rf *Raft) ClearSettings() {
+	rf.state = 0 // Received a heartbeat, so the server is a follower
+	rf.votedFor = -1
+	rf.votesReceived = 0
+	rf.electionTimer = time.Now() // reset the election timer
+	for i := 0; i < len(rf.peers); i++ {
+		rf.matchIndex[i] = 0
+		rf.nextIndex[i] = len(rf.log)
+	}
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -83,11 +94,8 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 
 	// As long as receiving the heartbeat, the server should become a follower
 	reply.Term = rf.currentTerm
-	rf.state = 0 // Received a heartbeat, so the server is a follower
 	rf.currentTerm = args.Term
-	rf.votedFor = -1
-	rf.votesReceived = 0
-	rf.electionTimer = time.Now() // reset the election timer
+	rf.ClearSettings()
 
 	if args.PrevLogIndex >= len(rf.log) {
 		reply.Success = false
@@ -120,7 +128,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	}
 
 	// If the append entries are successful, check the commitIndex > lastApplied, do apply to log[lastApplied] and increment lastApplied
-	if rf.commitIndex > rf.lastApplied {
+	if rf.commitIndex > rf.lastApplied && reply.Success {
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			applyMsg := ApplyMsg{
 				CommandValid: true,
@@ -135,7 +143,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	}
 }
 
-func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	args.LeaderCommit = rf.commitIndex
 	args.Term = rf.currentTerm
@@ -145,11 +153,18 @@ func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *
 
 	if rf.state != 2 {
 		rf.mu.Unlock()
-		return false
+		return
 	}
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntries(server, args, reply)
+
+	rf.mu.Lock()
+	if reply.Success && ok {
+		rf.mu.Unlock()
+		return
+	}
+	rf.mu.Unlock()
 
 	rf.mu.Lock()
 	fmt.Printf("Server %d sending append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, entries: %v, rf.nextIndex[%d]: %d, ok: %v, rf.currentTerm: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm, args.Entries, server, rf.nextIndex[server], ok, rf.currentTerm)
@@ -158,16 +173,13 @@ func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *
 		// Notice: disconnect means rf.killed() is true
 		// TODO: check if the follower is necessary
 		rf.mu.Lock()
-		// if reply.Term > rf.currentTerm {
-		// 	rf.currentTerm = reply.Term
-		// 	rf.state = 0
-		// 	rf.votedFor = -1
-		// 	rf.votesReceived = 0
-		// 	rf.electionTimer = time.Now()
-		// 	rf.mu.Unlock()
-		// 	fmt.Printf("Server %d received higher term from server %d, currentTerm: %d in send append rpc\n", rf.me, server, rf.currentTerm)
-		// 	return false
-		// }
+		if reply.Term > rf.currentTerm {
+			rf.currentTerm = reply.Term
+			rf.ClearSettings()
+			rf.mu.Unlock()
+			fmt.Printf("Server %d received higher term from server %d, currentTerm: %d in send append rpc\n", rf.me, server, rf.currentTerm)
+			return
+		}
 		args.LeaderCommit = rf.commitIndex
 		args.Term = rf.currentTerm
 		args.PrevLogIndex = rf.nextIndex[server] - 1
@@ -180,7 +192,6 @@ func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *
 		rf.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
 	}
-	return true
 }
 
 // TODO: Combine the sendReplicateRequest and sendHeartBeats into one function, reset the heartbeat timer when sending the heartbeats and replicate requests
@@ -204,17 +215,15 @@ func (rf *Raft) sendReplicateRequest(server int) {
 	rf.sendAppendRPCRepeatedly(server, &args, &reply)
 	// 2. Reduce the nextIndex and retry if the append entries is not successful
 	for !rf.killed() && !reply.Success && rf.state == 2 {
-		rf.mu.Lock()
 		if reply.Term > rf.currentTerm {
+			rf.mu.Lock()
 			rf.currentTerm = reply.Term
-			rf.state = 0
-			rf.votedFor = -1
-			rf.votesReceived = 0
-			rf.electionTimer = time.Now()
+			rf.ClearSettings()
 			rf.mu.Unlock()
 			fmt.Printf("Server %d received higher term from server %d, currentTerm: %d in replicate request\n", rf.me, server, rf.currentTerm)
 			return
 		} else {
+			rf.mu.Lock()
 			rf.nextIndex[server]--
 			args.PrevLogIndex = rf.nextIndex[server] - 1
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
@@ -247,8 +256,9 @@ func (rf *Raft) sendHeartBeats(server int) {
 	}
 
 	// For heartbeats, the PrevLogIndex and PrevLogTerm are set to -1 and 0
-	args.PrevLogIndex = 0
-	args.PrevLogTerm = 0
+	//TODO: set the PrevLogIndex and PrevLogTerm to the last log entry
+	args.PrevLogIndex = len(rf.log) - 1
+	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 
 	rf.mu.Unlock()
 	reply := AppendEntriesReply{}
@@ -269,10 +279,7 @@ func (rf *Raft) sendHeartBeats(server int) {
 	if ok {
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
-			rf.state = 0
-			rf.votedFor = -1
-			rf.votesReceived = 0
-			rf.electionTimer = time.Now() // return to follower, reset the election timer or it becomes a candidate again
+			rf.ClearSettings()
 			fmt.Printf("Server %d received higher term from server %d, currentTerm: %d in send heart beat\n", rf.me, server, rf.currentTerm)
 		}
 	}
@@ -498,7 +505,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Unlock()
 
 		rf.mu.Lock()
-		fmt.Printf("Server %d starting append entries, added log entry: %v\n", rf.me, rf.log[len(rf.log)-1])
+		fmt.Printf("Server %d starting append entries, rf.log: %v\n", rf.me, rf.log)
 		rf.mu.Unlock()
 
 		go func() {
@@ -508,8 +515,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 			// No need to check the state, cause even the previous leader has been downgraded
 			// the majority of the servers have acknowledged the append.
-			rf.commitIndex++
-			rf.matchIndex[rf.me]++
+			rf.commitIndex = len(rf.log) - 1
+			rf.matchIndex[rf.me] = len(rf.log) - 1
 			rf.nextIndex[rf.me] = len(rf.log)
 
 			fmt.Printf("Server %d finished waiting for majority of the servers, len(rf.log): %v, rf.commitIndex: %d\n", rf.me, len(rf.log), rf.commitIndex)
@@ -534,6 +541,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Unlock()
 	}
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return index, term, isLeader
 }
 
@@ -574,7 +583,6 @@ func (rf *Raft) startAppendEntries() {
 		// check whether the number of matchIndex is greater than the majority of the servers
 		count := 0
 		rf.mu.Lock()
-		// TODO: after start election, this condition has been passed!!
 
 		for i := 0; i < len(rf.peers); i++ {
 			if rf.matchIndex[i] >= len(rf.log)-1 {
@@ -632,10 +640,7 @@ func (rf *Raft) startElection() {
 
 				if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
-					rf.state = 0
-					rf.votedFor = -1
-					rf.votesReceived = 0
-					rf.electionTimer = time.Now() // return to follower, reset the election timer or it becomes a candidate again
+					rf.ClearSettings()
 					return
 				}
 
