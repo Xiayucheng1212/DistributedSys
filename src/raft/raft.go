@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 	// "fmt"
+	"bytes"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -83,6 +85,7 @@ func (rf *Raft) ClearSettings() {
 
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	defer rf.persist()
 	defer rf.mu.Unlock()
 	fmt.Printf("Server %d received append entries from leader %d with args PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d, rf.log: %v, len(args.Entries): %d\n", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, rf.log, len(args.Entries))
 
@@ -336,12 +339,18 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (3C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
 	// e.Encode(rf.xxx)
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.Save(data, nil)
 }
 
 // restore previously persisted state.
@@ -349,6 +358,7 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+
 	// Your code here (3C).
 	// Example:
 	// r := bytes.NewBuffer(data)
@@ -362,6 +372,21 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+		fmt.Printf("Error in decoding the data\n")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
+
 }
 
 // the service says it has created a snapshot that has
