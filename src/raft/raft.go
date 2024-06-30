@@ -144,6 +144,8 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 			rf.applyCh <- applyMsg
 		}
 	}
+
+	fmt.Printf("Server %d persists log: %v\n", rf.me, rf.log)
 }
 
 func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *AppendEntriesReply) {
@@ -372,6 +374,8 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
@@ -497,6 +501,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntries, reply *AppendEntriesReply) bool {
 	rf.mu.Lock()
 	serverInstance := rf.peers[server]
+	rf.persist()
 	rf.mu.Unlock()
 	ok := serverInstance.Call("Raft.AppendEntries", args, reply)
 	return ok
