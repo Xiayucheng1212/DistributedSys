@@ -105,6 +105,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	} else if args.PrevLogIndex == 0 {
 		if len(args.Entries) > 0 {
 			// If the PrevLogIndex is 0, it means the server has no log entries, so append the new entries
+			rf.log = rf.log[:args.PrevLogIndex + 1] // keep the {0, nil} entry
 			rf.log = append(rf.log, args.Entries...)
 		} // else it's a heartbeat
 		reply.Success = true
@@ -115,7 +116,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	} else {
 		// If the term of the log entry matches, append the new entries
 		if len(args.Entries) > 0 {
-			rf.log = rf.log[:args.PrevLogIndex+1]
+			rf.log = rf.log[:args.PrevLogIndex + 1]
 			rf.log = append(rf.log, args.Entries...)
 		}
 		reply.Success = true
@@ -231,6 +232,10 @@ func (rf *Raft) sendReplicateRequest(server int) {
 			rf.mu.Lock()
 			rf.nextIndex[server]--
 			args.PrevLogIndex = rf.nextIndex[server] - 1
+			// TODO: sometimes PrevLogIndex < 0, but hard to detect
+			// if (args.PrevLogIndex < 0) {
+			// 	fmt.Printf("Server %d in state %d retrying append entries to server %d with PrevLogIndex: %d\n", rf.me, rf.state, server, args.PrevLogIndex)
+			// }
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			args.Entries = rf.log[args.PrevLogIndex+1:]
 			args.Term = rf.currentTerm
