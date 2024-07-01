@@ -522,7 +522,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntries, reply *Append
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (3B).
 	rf.mu.Lock()
@@ -568,6 +568,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.mu.Unlock()
 		}()
 	} else {
+		isLeader = false
 		rf.mu.Unlock()
 	}
 

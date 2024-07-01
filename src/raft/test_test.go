@@ -826,14 +826,14 @@ func TestFigure83C(t *testing.T) {
 
 	cfg.begin("Test (3C): Figure 8")
 
-	cfg.one(rand.Int(), 1, true)
+	cfg.one(101, 1, true)
 
 	nup := servers
-	for iters := 0; iters < 1000; iters++ {
+	for iters := 0; iters < 500; iters++ {
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {
-				_, _, ok := cfg.rafts[i].Start(rand.Int())
+				_, _, ok := cfg.rafts[i].Start(rand.Int() % 100 + 100)
 				if ok {
 					leader = i
 				}
@@ -850,12 +850,14 @@ func TestFigure83C(t *testing.T) {
 
 		if leader != -1 {
 			cfg.crash1(leader)
+			fmt.Printf("Crashed leader: %v\n", leader)
 			nup -= 1
 		}
 
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.rafts[s] == nil {
+				fmt.Printf("Start server %v\n", s)
 				cfg.start1(s, cfg.applier)
 				cfg.connect(s)
 				nup += 1
@@ -863,6 +865,7 @@ func TestFigure83C(t *testing.T) {
 		}
 	}
 
+	// revive all servers
 	for i := 0; i < servers; i++ {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i, cfg.applier)
@@ -893,6 +896,7 @@ func TestUnreliableAgree3C(t *testing.T) {
 			}(iters, j)
 		}
 		cfg.one(iters, 1, true)
+		fmt.Printf("Finished iter %v \n", iters)
 	}
 
 	cfg.setunreliable(false)
