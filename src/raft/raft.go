@@ -550,12 +550,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 			// No need to check the state, cause even the previous leader has been downgraded
 			// the majority of the servers have acknowledged the append.
-			rf.commitIndex = len(rf.log) - 1
-			rf.matchIndex[rf.me] = len(rf.log) - 1
-			rf.nextIndex[rf.me] = len(rf.log)
-
-			fmt.Printf("Server %d finished waiting for majority of the servers, len(rf.log): %v, rf.commitIndex: %d\n", rf.me, len(rf.log), rf.commitIndex)
-
+			if !rf.killed() {
+				rf.commitIndex = index
+				rf.matchIndex[rf.me] = index
+				rf.nextIndex[rf.me] = index + 1
+	
+				fmt.Printf("Server %d finished waiting for majority of the servers, len(rf.log): %v, rf.commitIndex: %d\n", rf.me, len(rf.log), rf.commitIndex)
+			}
+			
 			// Apply Msg after update the commitIndex
 			if rf.commitIndex > rf.lastApplied {
 				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
