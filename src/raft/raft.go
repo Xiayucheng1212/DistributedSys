@@ -493,7 +493,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votesReceived = 0
 	}
 
-	// TODO: if a dis-connected server comes back with larger term, but not up-to-date, then it should not be voted
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		if rf.isUpToDate(args.LastLogIndex, args.LastLogTerm) {
 			rf.votedFor = args.CandidateId
