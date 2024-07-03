@@ -70,6 +70,9 @@ type AppendEntries struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	XTerm	int // term in the conflicting entry (if any)
+	XIndex	int // index of the first entry in the conflicting term (if any)
+	XLen	int // log length
 }
 
 func (rf *Raft) ClearSettings() {
@@ -81,6 +84,16 @@ func (rf *Raft) ClearSettings() {
 		rf.matchIndex[i] = 0
 		rf.nextIndex[i] = len(rf.log)
 	}
+}
+
+func (rf *Raft) FindStartIndex(XTerm int, startIdx int) int {
+	for i := startIdx; i >= 0; i-- {
+		if rf.log[i].Term != XTerm {
+			return i + 1
+		}
+	}
+
+	return 0
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
@@ -96,21 +109,19 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	}
 
 	// As long as receiving the heartbeat, the server should become a follower
+	reply.XTerm = -1 // if any
+	reply.XIndex = -1 // if any
+	reply.XLen = len(rf.log)
 	reply.Term = rf.currentTerm
 	rf.currentTerm = args.Term
 	rf.ClearSettings()
 
 	if args.PrevLogIndex >= len(rf.log) {
 		reply.Success = false
-	} else if args.PrevLogIndex == 0 {
-		if len(args.Entries) > 0 {
-			// If the PrevLogIndex is 0, it means the server has no log entries, so append the new entries
-			rf.log = rf.log[:args.PrevLogIndex + 1] // keep the {0, nil} entry
-			rf.log = append(rf.log, args.Entries...)
-		} // else it's a heartbeat
-		reply.Success = true
 	} else if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		// If the term of the log entry does not match, delete the log entry and all the following entries
+		reply.XTerm = rf.log[args.PrevLogIndex].Term
+		reply.XIndex = rf.FindStartIndex(reply.XTerm, args.PrevLogIndex)
 		rf.log = rf.log[:args.PrevLogIndex]
 		reply.Success = false
 	} else {
@@ -134,6 +145,10 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	// If the append entries are successful, check the commitIndex > lastApplied, do apply to log[lastApplied] and increment lastApplied
 	if rf.commitIndex > rf.lastApplied && reply.Success {
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			if i >= len(rf.log) {
+				break
+			}
+			
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      rf.log[i].Command,
@@ -141,7 +156,6 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 			}
 			rf.lastApplied = i
 			// Send the applyMsg to the applyCh
-			// TODO: Notice make sure it will not block the process
 			rf.applyCh <- applyMsg
 		}
 	}
@@ -161,9 +175,14 @@ func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *
 		rf.mu.Unlock()
 		return
 	}
+	fmt.Printf("args.PrevLogIndex: %v, nextIndex[%v]: %v\n", args.PrevLogIndex, server, rf.nextIndex[server])
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntries(server, args, reply)
+
+	rf.mu.Lock()
+	fmt.Printf("Server %d sending append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, entries: %v, rf.nextIndex[%d]: %d, ok: %v, rf.currentTerm: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm, args.Entries, server, rf.nextIndex[server], ok, rf.currentTerm)
+	rf.mu.Unlock()
 
 	rf.mu.Lock()
 	if reply.Success && ok {
@@ -172,12 +191,8 @@ func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *
 	}
 	rf.mu.Unlock()
 
-	rf.mu.Lock()
-	fmt.Printf("Server %d sending append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, entries: %v, rf.nextIndex[%d]: %d, ok: %v, rf.currentTerm: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm, args.Entries, server, rf.nextIndex[server], ok, rf.currentTerm)
-	rf.mu.Unlock()
 	for !rf.killed() && !ok && rf.state == 2 {
 		// Notice: disconnect means rf.killed() is true
-		// TODO: check if the follower is necessary
 		rf.mu.Lock()
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
@@ -197,6 +212,31 @@ func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *
 		fmt.Printf("Server %d re-sending append entries to server %d with PrevLogIndex: %d, PrevLogTerm: %d, len(rf.log):%v, rf.nextIndex[%d]: %d\n", rf.me, server, args.PrevLogIndex, args.PrevLogTerm, len(rf.log), server, rf.nextIndex[server])
 		rf.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) setNextIndex(server int, reply AppendEntriesReply, startIdx int) {
+	// if follower's log length is shorter
+	if reply.XLen < len(rf.log) {
+		rf.nextIndex[server] = reply.XLen
+		return
+	}
+	
+	// find if leader has XTerm
+	hasXTerm := false
+	lastEntry := startIdx
+	for i := startIdx; i >= 0; i-- {
+		if rf.log[i].Term == reply.XTerm {
+			hasXTerm = true
+			lastEntry = i
+			break
+		}
+	}
+
+	if !hasXTerm {
+		rf.nextIndex[server] = reply.XIndex
+	} else {
+		rf.nextIndex[server] = lastEntry + 1 // leader's last entry for XTerm + 1
 	}
 }
 
@@ -230,12 +270,12 @@ func (rf *Raft) sendReplicateRequest(server int) {
 			return
 		} else {
 			rf.mu.Lock()
-			rf.nextIndex[server]--
+			rf.setNextIndex(server, reply, args.PrevLogIndex)
 			args.PrevLogIndex = rf.nextIndex[server] - 1
-			// TODO: sometimes PrevLogIndex < 0, but hard to detect
-			// if (args.PrevLogIndex < 0) {
-			// 	fmt.Printf("Server %d in state %d retrying append entries to server %d with PrevLogIndex: %d\n", rf.me, rf.state, server, args.PrevLogIndex)
-			// }
+			if (args.PrevLogIndex < 0) {
+				fmt.Printf("Reply of XTerm: %d, Xindex: %d, XLen: %d, rf.nextIndex[server]: %d\n", reply.XTerm, reply.XIndex, reply.XLen, rf.nextIndex[server])
+				fmt.Printf("Server %d in state %d retrying append entries to server %d with PrevLogIndex: %d\n", rf.me, rf.state, server, args.PrevLogIndex)
+			}
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			args.Entries = rf.log[args.PrevLogIndex+1:]
 			args.Term = rf.currentTerm
@@ -266,7 +306,6 @@ func (rf *Raft) sendHeartBeats(server int) {
 	}
 
 	// For heartbeats, the PrevLogIndex and PrevLogTerm are set to -1 and 0
-	//TODO: set the PrevLogIndex and PrevLogTerm to the last log entry
 	args.PrevLogIndex = len(rf.log) - 1
 	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 
