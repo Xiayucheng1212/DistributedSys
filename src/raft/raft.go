@@ -240,7 +240,6 @@ func (rf *Raft) setNextIndex(server int, reply AppendEntriesReply, startIdx int)
 	}
 }
 
-// TODO: Combine the sendReplicateRequest and sendHeartBeats into one function, reset the heartbeat timer when sending the heartbeats and replicate requests
 func (rf *Raft) sendReplicateRequest(server int) {
 	rf.mu.Lock()
 
