@@ -43,8 +43,9 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := GetArgs{Key: key, ClerkId: ck.Id, SeqId: ck.SeqId}
 	reply := GetReply{}
-	for {
-		ok := ck.servers[0].Call("KVServer.Get", &args, &reply)
+	// send an RPC request to a random server, and keep trying indefinitely until find the Raft leader
+	for i := 0; ; i = (i + 1) % len(ck.servers) {
+		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		if (ok) {
 			ck.SeqId++
 			break
@@ -65,8 +66,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: ck.SeqId}
 	reply := PutAppendReply{}
-	for {
-		ok := ck.servers[0].Call("KVServer.PutAppend", &args, &reply)
+	for i := 0; ; i = (i + 1) % len(ck.servers) {
+		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if (ok) {
 			ck.SeqId++
 			break

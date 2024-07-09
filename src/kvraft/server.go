@@ -23,6 +23,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Opr string
+	Key string
+	Value string
+	ClerkId int64
+	SeqId int64
 }
 
 type KVServer struct {
@@ -35,19 +40,71 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	kv map[string]string // key-value store
+	//TODO: what is the purpose of ack?
+	ack map[int64]int64 // record the latest sequence number of each client
+}
+
+func (kv *KVServer) operationReader(index int) {
+	for msg := range kv.applyCh {
+		if msg.CommandValid && !kv.killed() && msg.CommandIndex == index {
+			op := msg.Command.(Op)
+			kv.mu.Lock()
+			if kv.ack[op.ClerkId] < op.SeqId {
+				switch op.Opr {
+				case "Put":
+					kv.kv[op.Key] = op.Value
+				case "Append":
+					kv.kv[op.Key] += op.Value
+				}
+				kv.ack[op.ClerkId] = op.SeqId
+			}
+			kv.mu.Unlock()
+		}
+	}
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{Opr: "Get", Key: args.Key, ClerkId: args.ClerkId, SeqId: args.SeqId}
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	// keep waiting for the Start operation to be committed
+	kv.operationReader(index)
+	kv.mu.Lock()
+	reply.Value = kv.kv[args.Key]
+	kv.mu.Unlock()
+	reply.Err = OK
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{Opr: "Put", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}	
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.operationReader(index)
+	reply.Err = OK
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{Opr: "Append", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.operationReader(index)
+	reply.Err = OK
 }
 
 // the tester calls Kill() when a KVServer instance won't
