@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
 const Debug = false
@@ -52,21 +54,28 @@ func (kv *KVServer) operationReader() {
 		if msg.CommandValid && !kv.killed() {
 			op := msg.Command.(Op)
 			kv.mu.Lock()
-			if preSeqId, ok := kv.ack[op.ClerkId]; ok && preSeqId < op.SeqId{
+			if preSeqId, ok := kv.ack[op.ClerkId]; !ok || preSeqId < op.SeqId{
+				fmt.Printf("Received op: %v\n", op)
 				switch op.Opr {
 				case "Put":
 					kv.kv[op.Key] = op.Value
 					kv.ack[op.ClerkId] = op.SeqId
+					// TODO: only insert into channel when the kvserver is the leader
 					kv.putCh <- 1
 				case "Append":
 					kv.kv[op.Key] += op.Value
 					kv.ack[op.ClerkId] = op.SeqId
+					// TODO: only insert into channel when the kvserver is the leader
 					kv.appendCh <- 1
+				case "Get":
+					kv.ack[op.ClerkId] = op.SeqId
+					// TODO: only insert into channel when the kvserver is the leader
+					kv.getCh <- 1
 				}
-				kv.ack[op.ClerkId] = op.SeqId
-				kv.getCh <- 1
 			}
 			kv.mu.Unlock()
+		} else if kv.killed() {
+			break
 		}
 	}
 }
@@ -93,6 +102,7 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{Opr: "Put", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}	
 	_, _, isLeader := kv.rf.Start(op)
+	fmt.Printf("Received Put request: %v\n", op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return

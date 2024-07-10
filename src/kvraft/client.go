@@ -3,6 +3,7 @@ package kvraft
 import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
+import "fmt"
 
 
 type Clerk struct {
@@ -24,7 +25,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-	ck.Id = nrand()
+	ck.Id = nrand() % 100
 	ck.SeqId = 0
 	return ck
 }
@@ -46,8 +47,9 @@ func (ck *Clerk) Get(key string) string {
 	reply := GetReply{}
 	// send an RPC request to a random server, and keep trying indefinitely until find the Raft leader
 	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
-		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if (ok) {
+		fmt.Printf("Get %v %v, %v\n", args, reply, i)
+ 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
+		if (ok && reply.Err == OK) {
 			ck.SeqId++
 			ck.PrevLeader = i
 			break
@@ -67,10 +69,19 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: ck.SeqId}
-	reply := PutAppendReply{}
 	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
-		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-		if (ok) {
+		reply := PutAppendReply{}
+		ok := false
+		if op == "Put" {
+			fmt.Printf("Put %v %v, %v\n", args, reply, i)
+			ok = ck.servers[i].Call("KVServer.Put", &args, &reply)
+		} else {
+			fmt.Printf("Append %v %v, %v\n", args, reply, i)
+			ok = ck.servers[i].Call("KVServer.Append", &args, &reply)
+		}
+
+		// TODO: wait for the leader to commit the request
+		if (ok && reply.Err == OK) {
 			ck.SeqId++
 			ck.PrevLeader = i
 			break
