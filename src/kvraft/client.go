@@ -10,6 +10,7 @@ type Clerk struct {
 	// You will have to modify this struct.
 	Id int64
 	SeqId int64
+	PrevLeader int
 }
 
 func nrand() int64 {
@@ -44,10 +45,11 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{Key: key, ClerkId: ck.Id, SeqId: ck.SeqId}
 	reply := GetReply{}
 	// send an RPC request to a random server, and keep trying indefinitely until find the Raft leader
-	for i := 0; ; i = (i + 1) % len(ck.servers) {
+	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		if (ok) {
 			ck.SeqId++
+			ck.PrevLeader = i
 			break
 		}
 	}
@@ -66,10 +68,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: ck.SeqId}
 	reply := PutAppendReply{}
-	for i := 0; ; i = (i + 1) % len(ck.servers) {
+	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if (ok) {
 			ck.SeqId++
+			ck.PrevLeader = i
 			break
 		}
 	}

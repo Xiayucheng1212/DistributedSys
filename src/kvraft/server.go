@@ -41,23 +41,30 @@ type KVServer struct {
 
 	// Your definitions here.
 	kv map[string]string // key-value store
-	//TODO: what is the purpose of ack?
 	ack map[int64]int64 // record the latest sequence number of each client
+	getCh chan int
+	putCh chan int
+	appendCh chan int
 }
 
-func (kv *KVServer) operationReader(index int) {
+func (kv *KVServer) operationReader() {
 	for msg := range kv.applyCh {
-		if msg.CommandValid && !kv.killed() && msg.CommandIndex == index {
+		if msg.CommandValid && !kv.killed() {
 			op := msg.Command.(Op)
 			kv.mu.Lock()
-			if kv.ack[op.ClerkId] < op.SeqId {
+			if preSeqId, ok := kv.ack[op.ClerkId]; ok && preSeqId < op.SeqId{
 				switch op.Opr {
 				case "Put":
 					kv.kv[op.Key] = op.Value
+					kv.ack[op.ClerkId] = op.SeqId
+					kv.putCh <- 1
 				case "Append":
 					kv.kv[op.Key] += op.Value
+					kv.ack[op.ClerkId] = op.SeqId
+					kv.appendCh <- 1
 				}
 				kv.ack[op.ClerkId] = op.SeqId
+				kv.getCh <- 1
 			}
 			kv.mu.Unlock()
 		}
@@ -68,13 +75,14 @@ func (kv *KVServer) operationReader(index int) {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	op := Op{Opr: "Get", Key: args.Key, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	index, _, isLeader := kv.rf.Start(op)
+	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	// keep waiting for the Start operation to be committed
-	kv.operationReader(index)
+
+	<-kv.getCh
+
 	kv.mu.Lock()
 	reply.Value = kv.kv[args.Key]
 	kv.mu.Unlock()
@@ -84,26 +92,26 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{Opr: "Put", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}	
-	index, _, isLeader := kv.rf.Start(op)
+	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	kv.operationReader(index)
+	<-kv.putCh
 	reply.Err = OK
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{Opr: "Append", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	index, _, isLeader := kv.rf.Start(op)
+	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	kv.operationReader(index)
+	<-kv.appendCh
 	reply.Err = OK
 }
 
@@ -153,6 +161,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.kv = make(map[string]string)
+	kv.ack = make(map[int64]int64)
+	kv.getCh = make(chan int)
+	kv.putCh = make(chan int)
+	kv.appendCh = make(chan int)
+
+	go kv.operationReader()
 
 	return kv
 }
