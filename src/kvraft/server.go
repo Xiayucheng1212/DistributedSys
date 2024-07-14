@@ -44,8 +44,8 @@ type KVServer struct {
 	// Your definitions here.
 	kv map[string]string // key-value store
 	ack map[int64]int64 // record the latest sequence number of each client
-	cv	sync.Cond // condition varaible to block the RPC methods
-	currentOp OP // the latest OP grabbed from kv.applyCh
+	cv	*sync.Cond // condition varaible to block the RPC methods
+	currentOp Op // the latest OP grabbed from kv.applyCh
 }
 
 func (kv *KVServer) operationReader() {
@@ -53,25 +53,23 @@ func (kv *KVServer) operationReader() {
 		if msg.CommandValid && !kv.killed() {
 			kv.mu.Lock()
 			kv.currentOp = msg.Command.(Op)
-			if preSeqId, ok := kv.ack[op.ClerkId]; !ok || preSeqId < op.SeqId{
-				fmt.Printf("Received op: %v\n", op)
-				switch op.Opr {
+			if preSeqId, ok := kv.ack[kv.currentOp.ClerkId]; !ok || preSeqId < kv.currentOp.SeqId{
+				fmt.Printf("Received kv.currentOp: %v\n", kv.currentOp)
+				switch kv.currentOp.Opr {
 				case "Put":
-					kv.kv[op.Key] = op.Value
-					kv.ack[op.ClerkId] = op.SeqId
-					// TODO: only insert into channel when the kvserver is the leader
-					kv.cv.broadcast()
+					kv.kv[kv.currentOp.Key] = kv.currentOp.Value
+					kv.ack[kv.currentOp.ClerkId] = kv.currentOp.SeqId
+					kv.cv.Broadcast()
 				case "Append":
-					kv.kv[op.Key] += op.Value
-					kv.ack[op.ClerkId] = op.SeqId
-					// TODO: only insert into channel when the kvserver is the leader
-					kv.cv.broadcast()
+					kv.kv[kv.currentOp.Key] += kv.currentOp.Value
+					kv.ack[kv.currentOp.ClerkId] = kv.currentOp.SeqId
+					kv.cv.Broadcast()
 				case "Get":
-					kv.ack[op.ClerkId] = op.SeqId
-					// TODO: only insert into channel when the kvserver is the leader
-					kv.cv.broadcast()
+					kv.ack[kv.currentOp.ClerkId] = kv.currentOp.SeqId
+					kv.cv.Broadcast()
 				}
 			}
+			fmt.Printf("kv.kv: %v\n", kv.kv)
 			kv.mu.Unlock()
 		} else if kv.killed() {
 			break
@@ -89,11 +87,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
+	kv.mu.Lock()
 	for kv.currentOp.Opr != "Get" || kv.currentOp.SeqId != args.SeqId {
 		kv.cv.Wait()
 	}
 
-	kv.mu.Lock()
 	reply.Value = kv.kv[args.Key]
 	kv.mu.Unlock()
 	reply.Err = OK
@@ -109,9 +107,11 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
+	kv.cv.L.Lock()
 	for kv.currentOp.Opr != "Put" || kv.currentOp.SeqId != args.SeqId {
 		kv.cv.Wait()
 	}
+	kv.cv.L.Unlock()
 
 	reply.Err = OK
 }
@@ -125,9 +125,11 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
+	kv.cv.L.Lock()
 	for kv.currentOp.Opr != "Append" || kv.currentOp.SeqId != args.SeqId {
 		kv.cv.Wait()
 	}
+	kv.cv.L.Unlock()
 
 	reply.Err = OK
 }
@@ -180,7 +182,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.kv = make(map[string]string)
 	kv.ack = make(map[int64]int64)
-	kv.cv = sync.NewCond(&sync.Mutex{})
+	kv.cv = sync.NewCond(&kv.mu)
 	kv.currentOp = Op{}
 
 	go kv.operationReader()

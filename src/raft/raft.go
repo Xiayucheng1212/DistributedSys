@@ -156,6 +156,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 			}
 			rf.lastApplied = i
 			// Send the applyMsg to the applyCh
+			fmt.Printf("applyMsg command: %v, i : %v, commitIndex: %v\n", applyMsg.Command, i, rf.commitIndex)
 			rf.applyCh <- applyMsg
 		}
 	}

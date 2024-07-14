@@ -55,7 +55,7 @@ func (ck *Clerk) Get(key string) string {
 			break
 		}
 	}
-	return ""
+	return reply.Value
 }
 
 // shared by Put and Append.
