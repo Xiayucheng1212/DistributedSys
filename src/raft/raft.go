@@ -100,7 +100,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.persist()
 	defer rf.mu.Unlock()
-	fmt.Printf("Server %d received append entries from leader %d with args PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d, rf.log: %v, len(args.Entries): %d\n", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, rf.log, len(args.Entries))
+	fmt.Printf("Server %d received append entries from leader %d with args PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d, len(args.Entries): %d\n", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, len(args.Entries))
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -161,7 +161,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		}
 	}
 
-	fmt.Printf("Server %d persists log: %v\n", rf.me, rf.log)
+	// fmt.Printf("Server %d persists log: %v\n", rf.me, rf.log)
 }
 
 func (rf *Raft) sendAppendRPCRepeatedly(server int, args *AppendEntries, reply *AppendEntriesReply) {
@@ -578,7 +578,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Unlock()
 
 		rf.mu.Lock()
-		fmt.Printf("Server %d starting append entries, rf.log: %v\n", rf.me, rf.log)
+		fmt.Printf("Server %d starting append entries\n", rf.me)
 		rf.mu.Unlock()
 
 		go func() {
@@ -730,7 +730,7 @@ func (rf *Raft) startElection() {
 							rf.nextIndex[i] = len(rf.log)
 							rf.matchIndex[i] = 0
 						}
-						fmt.Printf("Server %d becomes leader, rf.log: %v\n", rf.me, rf.log)
+						fmt.Printf("Server %d becomes leader\n", rf.me)
 					}
 				}
 			}(i)

@@ -105,6 +105,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		} else {
 			reply.Err = ErrWrongLeader
 		}
+	//TODO: timeout when there is a deadlock, release the lock and do it again
 	case <-time.After(2 * time.Second): 
 		reply.Err = ErrTimeout
 	}
