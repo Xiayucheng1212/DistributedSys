@@ -75,12 +75,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if op == "Put" {
 			fmt.Printf("Put %v %v, %v\n", args, reply, i)
 			ok = ck.servers[i].Call("KVServer.Put", &args, &reply)
-		} else {
+			fmt.Printf("Finished Put %v %v, %v\n", args, reply, i)
+			} else {
 			fmt.Printf("Append %v %v, %v\n", args, reply, i)
 			ok = ck.servers[i].Call("KVServer.Append", &args, &reply)
+			fmt.Printf("Finished Append %v %v, %v\n", args, reply, i)
 		}
 
-		// TODO: wait for the leader to commit the request
 		if (ok && reply.Err == OK) {
 			ck.SeqId++
 			ck.PrevLeader = i

@@ -106,6 +106,7 @@ func run_client(t *testing.T, cfg *config, me int, ca chan bool, fn func(me int,
 	ok := false
 	defer func() { ca <- ok }()
 	ck := cfg.makeClient(cfg.All())
+	fmt.Printf("run_client: client %d is running\n", me)
 	fn(me, ck, t)
 	ok = true
 	cfg.deleteClient(ck)

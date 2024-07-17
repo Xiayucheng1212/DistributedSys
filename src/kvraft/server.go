@@ -1,11 +1,10 @@
 package kvraft
 
 import (
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
-
+	"time"
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
@@ -44,35 +43,32 @@ type KVServer struct {
 	// Your definitions here.
 	kv map[string]string // key-value store
 	ack map[int64]int64 // record the latest sequence number of each client
-	cv	*sync.Cond // condition varaible to block the RPC methods
-	currentOp Op // the latest OP grabbed from kv.applyCh
+	waitChs  map[int]chan Op   // channels to notify waiting RPC handlers
+	lastApplied int            // last applied Raft log index
 }
 
 func (kv *KVServer) operationReader() {
 	for msg := range kv.applyCh {
-		if msg.CommandValid && !kv.killed() {
-			kv.mu.Lock()
-			kv.currentOp = msg.Command.(Op)
-			if preSeqId, ok := kv.ack[kv.currentOp.ClerkId]; !ok || preSeqId < kv.currentOp.SeqId{
-				fmt.Printf("Received kv.currentOp: %v\n", kv.currentOp)
-				switch kv.currentOp.Opr {
-				case "Put":
-					kv.kv[kv.currentOp.Key] = kv.currentOp.Value
-					kv.ack[kv.currentOp.ClerkId] = kv.currentOp.SeqId
-					kv.cv.Broadcast()
-				case "Append":
-					kv.kv[kv.currentOp.Key] += kv.currentOp.Value
-					kv.ack[kv.currentOp.ClerkId] = kv.currentOp.SeqId
-					kv.cv.Broadcast()
-				case "Get":
-					kv.ack[kv.currentOp.ClerkId] = kv.currentOp.SeqId
-					kv.cv.Broadcast()
-				}
-			}
-			fmt.Printf("kv.kv: %v\n", kv.kv)
-			kv.mu.Unlock()
-		} else if kv.killed() {
+		if kv.killed() {
 			break
+		}
+		if msg.CommandValid {
+			kv.mu.Lock()
+			op := msg.Command.(Op)
+			if lastSeq, ok := kv.ack[op.ClerkId]; !ok || op.SeqId > lastSeq {
+				switch op.Opr {
+				case "Put":
+					kv.kv[op.Key] = op.Value
+				case "Append":
+					kv.kv[op.Key] += op.Value
+				}
+				kv.ack[op.ClerkId] = op.SeqId
+			}
+			if ch, ok := kv.waitChs[msg.CommandIndex]; ok {
+				ch <- op
+			}
+			kv.lastApplied = msg.CommandIndex
+			kv.mu.Unlock()
 		}
 	}
 }
@@ -80,58 +76,103 @@ func (kv *KVServer) operationReader() {
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	kv.mu.Lock()
+	if seq, ok := kv.ack[args.ClerkId]; ok && seq >= args.SeqId {
+		reply.Err = OK
+		reply.Value = kv.kv[args.Key]
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+
 	op := Op{Opr: "Get", Key: args.Key, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	_, _, isLeader := kv.rf.Start(op)
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	kv.mu.Lock()
-	for kv.currentOp.Opr != "Get" || kv.currentOp.SeqId != args.SeqId {
-		kv.cv.Wait()
-	}
+	ch := kv.getWaitCh(index)
+	defer kv.removeWaitCh(index)
 
-	reply.Value = kv.kv[args.Key]
-	kv.mu.Unlock()
-	reply.Err = OK
+	select {
+	case appliedOp := <-ch:
+		if appliedOp.ClerkId == args.ClerkId && appliedOp.SeqId == args.SeqId {
+			kv.mu.Lock()
+			reply.Value = kv.kv[args.Key]
+			reply.Err = OK
+			kv.mu.Unlock()
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	case <-time.After(2 * time.Second): 
+		reply.Err = ErrTimeout
+	}
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := Op{Opr: "Put", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}	
-	_, _, isLeader := kv.rf.Start(op)
-	fmt.Printf("Received Put request: %v\n", op)
+	op := Op{Opr: "Put", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	kv.cv.L.Lock()
-	for kv.currentOp.Opr != "Put" || kv.currentOp.SeqId != args.SeqId {
-		kv.cv.Wait()
-	}
-	kv.cv.L.Unlock()
+	ch := kv.getWaitCh(index)
+	defer kv.removeWaitCh(index)
 
-	reply.Err = OK
+	select {
+	case appliedOp := <-ch:
+		if appliedOp.ClerkId == args.ClerkId && appliedOp.SeqId == args.SeqId {
+			reply.Err = OK
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	case <-time.After(2 * time.Second):
+		reply.Err = ErrTimeout
+	}
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{Opr: "Append", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	_, _, isLeader := kv.rf.Start(op)
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	kv.cv.L.Lock()
-	for kv.currentOp.Opr != "Append" || kv.currentOp.SeqId != args.SeqId {
-		kv.cv.Wait()
-	}
-	kv.cv.L.Unlock()
+	ch := kv.getWaitCh(index)
+	defer kv.removeWaitCh(index)
 
-	reply.Err = OK
+	select {
+	case appliedOp := <-ch:
+		if appliedOp.ClerkId == args.ClerkId && appliedOp.SeqId == args.SeqId {
+			reply.Err = OK
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	case <-time.After(2 * time.Second):
+		reply.Err = ErrTimeout
+	}
+}
+
+func (kv *KVServer) getWaitCh(index int) chan Op {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if _, ok := kv.waitChs[index]; !ok {
+		kv.waitChs[index] = make(chan Op, 1)
+	}
+	return kv.waitChs[index]
+}
+
+func (kv *KVServer) removeWaitCh(index int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	delete(kv.waitChs, index)
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -182,8 +223,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.kv = make(map[string]string)
 	kv.ack = make(map[int64]int64)
-	kv.cv = sync.NewCond(&kv.mu)
-	kv.currentOp = Op{}
+	kv.waitChs = make(map[int]chan Op)
+	kv.lastApplied = 0
 
 	go kv.operationReader()
 
