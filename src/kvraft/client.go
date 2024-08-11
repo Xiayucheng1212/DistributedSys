@@ -68,19 +68,12 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: ck.SeqId}
+	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: ck.SeqId, Op: op}
 	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
 		reply := PutAppendReply{}
 		ok := false
-		if op == "Put" {
-			fmt.Printf("Put %v %v, %v\n", args, reply, i)
-			ok = ck.servers[i].Call("KVServer.Put", &args, &reply)
-			fmt.Printf("Finished Put %v %v, %v\n", args, reply, i)
-			} else {
-			fmt.Printf("Append %v %v, %v\n", args, reply, i)
-			ok = ck.servers[i].Call("KVServer.Append", &args, &reply)
-			fmt.Printf("Finished Append %v %v, %v\n", args, reply, i)
-		}
+		ok = ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+
 
 		if (ok && reply.Err == OK) {
 			ck.SeqId++

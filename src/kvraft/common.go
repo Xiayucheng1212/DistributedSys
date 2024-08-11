@@ -18,6 +18,7 @@ type PutAppendArgs struct {
 	// otherwise RPC will break.
 	ClerkId int64
 	SeqId   int64
+	Op 	string // "Put" or "Append"
 }
 
 type PutAppendReply struct {

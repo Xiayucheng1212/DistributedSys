@@ -10,25 +10,26 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
+	if Debug > 0 {
 		log.Printf(format, a...)
 	}
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Opr string
-	Key string
+	Type  string
+	Key   string
 	Value string
-	ClerkId int64
-	SeqId int64
+	// duplicate detection info needs to be part of state machine
+	// so that all raft servers eliminate the same duplicates
+	ClientId  int64
+	RequestId int64
 }
 
 type KVServer struct {
@@ -41,141 +42,141 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kv map[string]string // key-value store
-	ack map[int64]int64 // record the latest sequence number of each client
-	waitChs  map[int]chan Op   // channels to notify waiting RPC handlers
-	lastApplied int            // last applied Raft log index
+	store       map[string]string
+	results     map[int]chan Op
+	lastApplied map[int64]int64
 }
 
-func (kv *KVServer) operationReader() {
-	for msg := range kv.applyCh {
-		if kv.killed() {
-			break
-		}
-		if msg.CommandValid {
-			kv.mu.Lock()
-			op := msg.Command.(Op)
-			if lastSeq, ok := kv.ack[op.ClerkId]; !ok || op.SeqId > lastSeq {
-				switch op.Opr {
-				case "Put":
-					kv.kv[op.Key] = op.Value
-				case "Append":
-					kv.kv[op.Key] += op.Value
-				}
-				kv.ack[op.ClerkId] = op.SeqId
-			}
-			if ch, ok := kv.waitChs[msg.CommandIndex]; ok {
-				ch <- op
-			}
-			kv.lastApplied = msg.CommandIndex
-			kv.mu.Unlock()
-		}
-	}
-}
-
-
+//
+// Get RPC handler
+//
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	kv.mu.Lock()
-	if seq, ok := kv.ack[args.ClerkId]; ok && seq >= args.SeqId {
-		reply.Err = OK
-		reply.Value = kv.kv[args.Key]
-		kv.mu.Unlock()
+	op := Op{
+		Type:      "Get",
+		Key:       args.Key,
+		ClientId:  args.ClerkId,
+		RequestId: args.SeqId,
+	}
+
+	ok, appliedOp := kv.waitForApplied(op)
+	if !ok {
+		reply.Err = ErrWrongLeader
 		return
+	}
+
+	reply.Err = OK
+	reply.Value = appliedOp.Value
+}
+
+//
+// PutAppend RPC handler
+//
+func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	// Your code here.
+	op := Op{
+		Type:      args.Op,
+		Key:       args.Key,
+		Value:     args.Value,
+		ClientId:  args.ClerkId,
+		RequestId: args.SeqId,
+	}
+
+	ok, _ := kv.waitForApplied(op)
+	if !ok {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	reply.Err = OK
+}
+
+//
+// send the op log to Raft library and wait for it to be applied
+//
+func (kv *KVServer) waitForApplied(op Op) (bool, Op) {
+	index, _, isLeader := kv.rf.Start(op)
+
+	if !isLeader {
+		return false, op
+	}
+
+	kv.mu.Lock()
+	opCh, ok := kv.results[index]
+	if !ok {
+		opCh = make(chan Op, 1)
+		kv.results[index] = opCh
 	}
 	kv.mu.Unlock()
 
-	op := Op{Opr: "Get", Key: args.Key, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	index, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
-
-	ch := kv.getWaitCh(index)
-	defer kv.removeWaitCh(index)
-
 	select {
-	case appliedOp := <-ch:
-		if appliedOp.ClerkId == args.ClerkId && appliedOp.SeqId == args.SeqId {
-			kv.mu.Lock()
-			reply.Value = kv.kv[args.Key]
-			reply.Err = OK
-			kv.mu.Unlock()
-		} else {
-			reply.Err = ErrWrongLeader
+	case appliedOp := <-opCh:
+		return kv.isSameOp(op, appliedOp), appliedOp
+	case <-time.After(600 * time.Millisecond):
+		return false, op
+	}
+}
+
+//
+// check if the issued command is the same as the applied command
+//
+func (kv *KVServer) isSameOp(issued Op, applied Op) bool {
+	return issued.ClientId == applied.ClientId &&
+		issued.RequestId == applied.RequestId
+}
+
+//
+// background loop to receive the logs committed by the Raft
+// library and apply them to the kv server state machine
+//
+func (kv *KVServer) applyOpsLoop() {
+	for {
+		msg := <-kv.applyCh
+		if !msg.CommandValid {
+			continue
 		}
-	// Notice: timeout when there is a deadlock, release the lock and do it again
-	case <-time.After(2 * time.Second): 
-		reply.Err = ErrTimeout
-	}
-}
+		index := msg.CommandIndex
+		op := msg.Command.(Op)
 
-func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
-	op := Op{Opr: "Put", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	index, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
+		kv.mu.Lock()
 
-	ch := kv.getWaitCh(index)
-	defer kv.removeWaitCh(index)
-
-	select {
-	case appliedOp := <-ch:
-		if appliedOp.ClerkId == args.ClerkId && appliedOp.SeqId == args.SeqId {
-			reply.Err = OK
+		if op.Type == "Get" {
+			kv.applyToStateMachine(&op)
 		} else {
-			reply.Err = ErrWrongLeader
+			lastId, ok := kv.lastApplied[op.ClientId]
+			if !ok || op.RequestId > lastId {
+				kv.applyToStateMachine(&op)
+				kv.lastApplied[op.ClientId] = op.RequestId
+			}
 		}
-	case <-time.After(2 * time.Second):
-		reply.Err = ErrTimeout
-	}
-}
 
-func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
-	op := Op{Opr: "Append", Key: args.Key, Value: args.Value, ClerkId: args.ClerkId, SeqId: args.SeqId}
-	index, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
-
-	ch := kv.getWaitCh(index)
-	defer kv.removeWaitCh(index)
-
-	select {
-	case appliedOp := <-ch:
-		if appliedOp.ClerkId == args.ClerkId && appliedOp.SeqId == args.SeqId {
-			reply.Err = OK
-		} else {
-			reply.Err = ErrWrongLeader
+		opCh, ok := kv.results[index]
+		if !ok {
+			opCh = make(chan Op, 1)
+			kv.results[index] = opCh
 		}
-	case <-time.After(2 * time.Second):
-		reply.Err = ErrTimeout
+		opCh <- op
+
+		kv.mu.Unlock()
 	}
 }
 
-func (kv *KVServer) getWaitCh(index int) chan Op {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	if _, ok := kv.waitChs[index]; !ok {
-		kv.waitChs[index] = make(chan Op, 1)
+//
+// applied the command to the state machine
+// lock must be held before calling this
+//
+func (kv *KVServer) applyToStateMachine(op *Op) {
+	switch op.Type {
+	case "Get":
+		op.Value = kv.store[op.Key]
+	case "Put":
+		kv.store[op.Key] = op.Value
+	case "Append":
+		kv.store[op.Key] += op.Value
 	}
-	return kv.waitChs[index]
 }
 
-func (kv *KVServer) removeWaitCh(index int) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	delete(kv.waitChs, index)
-}
-
+//
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
 // code to set rf.dead (without needing a lock),
@@ -184,6 +185,7 @@ func (kv *KVServer) removeWaitCh(index int) {
 // code to Kill(). you're not required to do anything
 // about this, but it may be convenient (for example)
 // to suppress debug output from a Kill()ed instance.
+//
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
@@ -195,6 +197,7 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+//
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
@@ -207,6 +210,7 @@ func (kv *KVServer) killed() bool {
 // you don't need to snapshot.
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
+//
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -217,17 +221,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.store = make(map[string]string)
+	kv.results = make(map[int]chan Op)
+	kv.lastApplied = make(map[int64]int64)
 
 	// You may need initialization code here.
-	kv.kv = make(map[string]string)
-	kv.ack = make(map[int64]int64)
-	kv.waitChs = make(map[int]chan Op)
-	kv.lastApplied = 0
-
-	go kv.operationReader()
+	go kv.applyOpsLoop()
 
 	return kv
 }
