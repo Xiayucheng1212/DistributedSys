@@ -43,7 +43,7 @@ type KVServer struct {
 
 	// Your definitions here.
 	store       map[string]string
-	results     map[int]chan Op
+	ack     map[int]chan Op // record each command's ack channel
 	lastApplied map[int64]int64
 }
 
@@ -102,10 +102,10 @@ func (kv *KVServer) waitForApplied(op Op) (bool, Op) {
 	}
 
 	kv.mu.Lock()
-	opCh, ok := kv.results[index]
+	opCh, ok := kv.ack[index]
 	if !ok {
 		opCh = make(chan Op, 1)
-		kv.results[index] = opCh
+		kv.ack[index] = opCh
 	}
 	kv.mu.Unlock()
 
@@ -150,10 +150,10 @@ func (kv *KVServer) applyOpsLoop() {
 			}
 		}
 
-		opCh, ok := kv.results[index]
+		opCh, ok := kv.ack[index]
 		if !ok {
 			opCh = make(chan Op, 1)
-			kv.results[index] = opCh
+			kv.ack[index] = opCh
 		}
 		opCh <- op
 
@@ -224,7 +224,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.store = make(map[string]string)
-	kv.results = make(map[int]chan Op)
+	kv.ack = make(map[int]chan Op)
 	kv.lastApplied = make(map[int64]int64)
 
 	// You may need initialization code here.

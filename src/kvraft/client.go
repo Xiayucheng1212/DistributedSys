@@ -4,6 +4,7 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 import "fmt"
+import "sync/atomic"
 
 
 type Clerk struct {
@@ -11,7 +12,7 @@ type Clerk struct {
 	// You will have to modify this struct.
 	Id int64
 	SeqId int64
-	PrevLeader int
+	PrevLeader int32
 }
 
 func nrand() int64 {
@@ -43,18 +44,23 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	args := GetArgs{Key: key, ClerkId: ck.Id, SeqId: ck.SeqId}
+	// Notice: need use atomic operation to update SeqId and PrevLeader
+	SeqId := atomic.AddInt64(&ck.SeqId, 1)
+	PrevLeader := atomic.LoadInt32(&ck.PrevLeader)
+
+	args := GetArgs{Key: key, ClerkId: ck.Id, SeqId: SeqId}
 	reply := GetReply{}
 	// send an RPC request to a random server, and keep trying indefinitely until find the Raft leader
-	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
+	for i := int(PrevLeader); ; i = (i + 1) % len(ck.servers) {
 		fmt.Printf("Get %v %v, %v\n", args, reply, i)
  		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		if (ok && reply.Err == OK) {
-			ck.SeqId++
-			ck.PrevLeader = i
+			atomic.StoreInt32(&ck.PrevLeader, int32(i))
 			break
 		}
 	}
+
+	// update PrevLeader
 	return reply.Value
 }
 
@@ -68,16 +74,19 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: ck.SeqId, Op: op}
-	for i := ck.PrevLeader; ; i = (i + 1) % len(ck.servers) {
+	// Notice: need use atomic operation to update SeqId and PrevLeader
+	SeqId := atomic.AddInt64(&ck.SeqId, 1)
+	PrevLeader := atomic.LoadInt32(&ck.PrevLeader)
+
+	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.Id, SeqId: SeqId, Op: op}
+	for i := int(PrevLeader); ; i = (i + 1) % len(ck.servers) {
 		reply := PutAppendReply{}
 		ok := false
 		ok = ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 
 
 		if (ok && reply.Err == OK) {
-			ck.SeqId++
-			ck.PrevLeader = i
+			atomic.StoreInt32(&ck.PrevLeader, int32(i))
 			break
 		}
 	}
